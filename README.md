@@ -1,5 +1,5 @@
 # musig
-This is a python implementation of [MuSig](https://eprint.iacr.org/2018/068.pdf) multi-signature scheme. 
+This is a python implementation of [MuSig](https://eprint.iacr.org/2018/068.pdf) multi-signature scheme. It uses `secp256k1` elliptic curve from fastecdsa library and Flask REST API for peers' 3-round communication protocol.
 
 The library uses a json configuration file to load peers' public keys and connection information (IPs and ports) as the example below:
 ```json
