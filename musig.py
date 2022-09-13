@@ -296,7 +296,7 @@ class Musig:
         for si in s_list:
             s += si
 
-        return s % curve.secp256k1.q, R
+        return R, s % curve.secp256k1.q
 
     def verify(self, R, s, msg):
         if (R is None) or (s is None) or (msg is None) or (self.aggr_X is None):
@@ -344,11 +344,11 @@ if __name__ == "__main__":
 
     msg = 'test123'
 
-    s, R = musig.sign(msg)
+    R, s = musig.sign(msg)
 
     signature = {
-        's': int(s),
-        'R': point_to_json(R)
+        'R': point_to_json(R),
+        's': int(s)
     }
 
     print('Signature:')
