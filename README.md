@@ -93,7 +93,7 @@ Insert a peer entry in your configuration file using the following template (cha
 }
 ```
 
-Below is an example of how to use the library to sign messages:
+Below is an example of how to use the library to sign and verify messages:
 ```
 import musig
 
