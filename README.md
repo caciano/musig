@@ -2,7 +2,7 @@
 This is a python implementation of [MuSig](https://eprint.iacr.org/2018/068.pdf) multi-signature scheme. 
 
 The library uses a json configuration file to load peers' public keys and connection information (IPs and ports) as the example below:
-```
+```json
 {
   "1171431706335400": {
     "ip": "127.0.0.1",
@@ -94,7 +94,7 @@ Insert a peer entry in your configuration file using the following template (cha
 ```
 
 Below is an example of how to use the library to sign and verify messages:
-```
+```python
 import musig
 
 m = musig.Musig('peers_file', 'mykey/5343039124930959')
