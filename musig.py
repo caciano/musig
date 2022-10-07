@@ -3,10 +3,23 @@ from fastecdsa import keys, curve, point
 from hashlib import sha256
 from os import makedirs, urandom
 from sys import stderr
+from math import ceil
 import json
 import p2p
 import re
 import time
+import merkle
+from itertools import combinations, islice
+
+def restricted_float(x):
+    try:
+        x = float(x)
+    except ValueError:
+        raise argparse.ArgumentTypeError("%r not a floating-point literal" % (x,))
+
+    if x <= 0.0 or x > 1.0:
+        raise argparse.ArgumentTypeError("%r not in range (0.0, 1.0]"%(x,))
+    return x
 
 def json_to_point(p):
     return point.Point(int(p['x']), int(p['y']), curve.secp256k1)
@@ -116,14 +129,15 @@ def testgen(n):
     exit(0)
 
 class Musig:
-    def __init__(self, config, priv_key_file):
+    def __init__(self, config, priv_key_file, quorumpercentage):
         # Local peer id is defined by
         # 1. -c: verify if exactly one peer has a private key in the config file, this one will be the local peer
         # 2. -k: use peer identifier in private key file
         self.priv_key = 0
         self.peer_id = 0
+        self.aggrX = 0
+        self.quorumpercentage = float(quorumpercentage)
 
-        #print('Using config file ' + config)
         f = open(config)
         self.peers = json.load(f)
 
@@ -171,8 +185,6 @@ class Musig:
                 stderr.write('Invalid tcp port for peer ' + peer)
                 exit(-1)
 
-        #print('Loaded n = ' + str(len(self.peers)) + ' peers')
-
         # private key in separate pem file
         if self.priv_key == 0:
             self.priv_key, self.pub_key = keys.import_key(priv_key_file)
@@ -186,14 +198,17 @@ class Musig:
                 stderr.write('Local peer ' + self.peer_id + ' private key does not correspond public key found in peer list')
                 exit(-1)
 
-        #else:
-            #print('Private key already found in config file. Not loading private key pem file')
-
         if json_to_point(self.peers[self.peer_id]['public_key']) != keys.get_public_key(int(self.priv_key), curve.secp256k1):
             stderr.write('Invalid keys from peer' + peer_id + ' in config file (cannot derive public key from private key')
             exit(-1)
 
-        p2p.run(self.peers, self.peer_id)
+        self.calculate_aggr_keys()
+
+    # recalculate the aggregated keys and merkle tree with the current membership and m-of-n configuration
+    def calculate_aggr_keys(self):
+        # define m-of-n values using self.quorumpercentage percentual
+        self.n = len(self.peers.keys())
+        self.m = ceil(float(self.quorumpercentage) * self.n)
 
         # ordered public keys
         pks = []
@@ -206,9 +221,39 @@ class Musig:
         l.update(str(pks).encode())
         self.unique_l = str(l.hexdigest())
 
-        # all a_i
+        # create all combinations of aggregated keys for m-of-n configuration
+        # if m == n, then aggr_keys[0] will be the unique aggregated key
+        aggr_keys = []
+        for k in range(self.m, self.n + 1):
+            comb_set = combinations(pks, k)
+            for subset in comb_set:
+                if len(subset) == 1:
+                    continue
+                else:
+                    aggrX, this_a_i = self.calculate_aggr_key(subset)
+                    aggr_keys.append(aggrX)
+
+        self.merkle_tree = []
+        if self.quorumpercentage < 1.0 and self.n > 2:
+            hash_list = merkle.threaded_hashes(aggr_keys)
+            merkle.sort_hashes(hash_list)
+            hash_list = merkle.clear_hash_list(hash_list)
+            merkle.adjust_leafs_for_binary_tree(hash_list)
+            merkle.build_tree(hash_list, self.merkle_tree)
+        elif len(aggr_keys) == 1:
+            self.aggr_key = aggr_keys[0]
+
+    def join(self, peer):
+        # TODO: recalculate m-of-n Merkle tree
+        print('join not implemented')
+
+    def leave(self, peer):
+        # TODO: recalculate m-of-n Merkle tree
+        print('leave not implemented')
+
+    def calculate_aggr_key(self, pks):
         a = []
-        self.a_i = 0
+        this_a_i = 0
         for i in range(len(pks)):
             a_i = sha256()
             a_i.update((self.unique_l + str(pks[i])).encode())
@@ -216,31 +261,32 @@ class Musig:
             a_i = int.from_bytes(a_i, byteorder='little')
             a_i = a_i % curve.secp256k1.q
             if pks[i] == json_to_point(self.peers[self.peer_id]['public_key']):
-                self.a_i = a_i
+                this_a_i = a_i
             a.append(a_i)
 
-        # aggregated public key
-        aggr_X = pks[0] * a[0]
+        aggrX = pks[0] * a[0]
         for i in range(1, len(a)):
-            aggr_X += pks[i] * a[i]
-        self.aggr_X = aggr_X
+            aggrX += pks[i] * a[i]
+        return aggrX, this_a_i
 
-    def cosigners(m):
-        if m < 2 or m >= len(self.peers):
-            stderr.write('The number of co-signers m must be at least 2 and less than n in m-of-n configuration')
-        print('cosigners not implemented')
-        # TODO: create Merkle tree for m-of-n configuration
+    # get public keys list from a peers json formatted list
+    def get_pks_from_peers(self, peers):
+        pks = []
+        for peer in peers.keys():
+            pks.append(json_to_point(peers[peer]['public_key']))
+        return pks
 
-    def join(peer):
-        # TODO: recalculate m-of-n Merkle tree
-        print('join not implemented')
+    def sign(self, msg, signers=None):
 
-    def leave(peer):
-        # TODO: recalculate m-of-n Merkle tree
-        print('leave not implemented')
+        if signers is None:
+            signers = self.peers
 
-    def sign(self, msg):
-        # TODO: pass set of peers from peer list participating in m-of-n multi-signature
+        if len(signers) < 2:
+            stderr.write('Number of signers < 2')
+            return(-1)
+
+        aggrX, this_a_i = self.calculate_aggr_key(self.get_pks_from_peers(signers)) # this_a_i used to calculate s
+
         # random rlocal
         rlocal = 0
         while rlocal == 0:
@@ -255,12 +301,14 @@ class Musig:
         ti.update((str(Rlocal)).encode())
         ti = ti.hexdigest()
 
+        p2p.run(signers, self.peer_id)
+
         pars = p2p.exchange('ti', str(ti))
 
         pars = p2p.exchange('Ri', point_to_json(Rlocal))
 
         # verify Ri
-        for peer in self.peers.keys():
+        for peer in signers.keys():
             if peer != self.peer_id:
                 ti = sha256()
                 Ri = json_to_point(pars[peer]['Ri'])
@@ -272,39 +320,49 @@ class Musig:
 
         # R
         R = Rlocal
-        for peer in self.peers.keys():
+        for peer in signers.keys():
             if peer != self.peer_id:
                 R += json_to_point(pars[peer]['Ri'])
 
         # c
         c = sha256()
-        c.update((str(R) + str(self.aggr_X) + msg).encode())
+        c.update((str(R) + str(aggrX) + msg).encode())
         c = c.hexdigest()
         c = int(c, 16)
         c = c % curve.secp256k1.q
 
-        # s
-        s = (mpz(rlocal) + mpz(c) * mpz(self.a_i) * mpz(self.priv_key)) % curve.secp256k1.q
+        s = (mpz(rlocal) + mpz(c) * mpz(this_a_i) * mpz(self.priv_key)) % curve.secp256k1.q
         pars = p2p.exchange('si', str(s))
         p2p.stop()
 
         s_list = []
-        for peer in self.peers.keys():
+        for peer in signers.keys():
             if peer != self.peer_id:
                 s_list.append(mpz(pars[peer]['si']))
 
         for si in s_list:
             s += si
 
-        return R, s % curve.secp256k1.q
+        if len(self.merkle_tree) > 0:
+            proof = merkle.produce_proof(aggrX, self.merkle_tree)
+        else:
+            proof = None
 
-    def verify(self, R, s, msg):
-        if (R is None) or (s is None) or (msg is None) or (self.aggr_X is None):
+        return R, s % curve.secp256k1.q, aggrX, proof
+
+    def verify(self, msg, R, s, aggrX=None, proof=None):
+        if aggrX is None or proof is None:
+            aggrX = self.aggr_key
+            proof = None
+        elif not merkle.verify(self.merkle_tree[0], aggrX, proof):
+            return -1
+
+        if (R is None) or (s is None) or (msg is None) or (aggrX is None):
             stderr.write('Missing parameters')
             return False
 
         c = sha256()
-        c.update((str(R) + str(self.aggr_X) + msg).encode())
+        c.update((str(R) + str(aggrX) + msg).encode())
         c = c.hexdigest()
 
         c = int(c, 16)
@@ -313,7 +371,7 @@ class Musig:
 
         # checking if sP = R + sum(ai*c*Xi) = R + c*X'
         left = int(s) * curve.secp256k1.G
-        right = R + c * self.aggr_X
+        right = R + c * aggrX
 
         if left.x == right.x and left.y == right.y:
             return True
@@ -322,11 +380,12 @@ class Musig:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='MuSig signer/verifier')
+    parser = argparse.ArgumentParser(description='MuSig m-of-n signer/verifier')
     parser.add_argument('-c', '--config', help="Configuration file with peer's public keys and IPs", default='test/peers')
+    parser.add_argument('-s', '--signers', help="Signers peer's list", default='test/signers') # TODO: unused yet
     parser.add_argument('-t', '--testgen', type=int, choices=range(2,16), help="Generate test configuration file")
     parser.add_argument('-g', '--keygen', action='store_true', help="Generate public key")
-    parser.add_argument('-m', '--co-signers', type=int, help="Number of m-of-n co-signers")
+    parser.add_argument('-q', '--quorumpercentage', type=restricted_float, help="Percentual m/n for co-signers (0.0 - 1.0]", default = '1.0')
     parser.add_argument('-k', '--privkey', help="Private key file path", default='mykey/private_key.pem')
     args = parser.parse_args()
 
@@ -339,22 +398,38 @@ if __name__ == "__main__":
         testgen(args.testgen)
 
     # TODO: peer join and leave methods
-    # TODO: parameter m for m-of-n and Merkle tree build
-    musig = Musig(args.config, args.privkey)
+    musig = Musig(args.config, args.privkey, float(args.quorumpercentage))
+
+    if musig.quorumpercentage == 1.0:
+        print('No merkle tree because m = n, calculating only one aggregated key')
+    elif musig.quorumpercentage < 1.0:
+        print('Merkle tree of all possible aggregated public key combinations:')
+        print(musig.merkle_tree)
+
+    # create a new dict with the first musig.m peers in config file to test m-of-n signatures for test purposes
+    # XXX: if musig.peer_id is not present in the dict, the script exits
+    cosigners_peers = {k: musig.peers[k] for k in list(musig.peers)[:musig.m]}
+
+    if not(musig.peer_id in cosigners_peers.keys()):
+        stderr.write('This peer ID is not one of the first ' + str(musig.m) + ' from ' + str(musig.n) + ' entries in the config file ' + args.config)
+        exit(-1)
 
     msg = 'test123'
 
-    R, s = musig.sign(msg)
+    R, s, aggrX, proof = musig.sign(msg, cosigners_peers)
 
     signature = {
         'R': point_to_json(R),
-        's': int(s)
+        's': int(s),
+        'aggrX': point_to_json(aggrX),
+        'proof': proof
     }
 
     print('Signature:')
     print(json.dumps(signature, indent=2))
 
-    if musig.verify(R, s, msg):
+
+    if musig.verify(msg, R, s, aggrX, proof):
         print('Signature is valid')
     else:
         print('Signature is not valid')
