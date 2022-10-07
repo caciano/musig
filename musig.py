@@ -129,7 +129,7 @@ def testgen(n):
     exit(0)
 
 class Musig:
-    def __init__(self, config, priv_key_file, quorumpercentage):
+    def __init__(self, config, priv_key_file=None, quorumpercentage=1.0):
         # Local peer id is defined by
         # 1. -c: verify if exactly one peer has a private key in the config file, this one will be the local peer
         # 2. -k: use peer identifier in private key file
@@ -187,6 +187,10 @@ class Musig:
 
         # private key in separate pem file
         if self.priv_key == 0:
+            if priv_key_file == None:
+                stderr.write('Private key was not found')
+                exit(-1)
+
             self.priv_key, self.pub_key = keys.import_key(priv_key_file)
 
             self.peer_id = str(self.pub_key.x ^ self.pub_key.y)[-16:]
