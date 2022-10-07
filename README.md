@@ -97,11 +97,30 @@ Below is an example of how to use the library to sign and verify messages:
 ```python
 import musig
 
-m = musig.Musig('peers_file', 'mykey/5343039124930959')
+ms = musig.Musig('peers_file', 'mykey/private_key6509695481504055.pem')
 
-R, s = m.sign('Message')
+R, s = ms.sign('Message')
 
-if m.verify(R, s, 'Message'):
+if ms.verify(R, s, 'Message'):
+    print('Signature is valid')
+else:
+    print('Signature is not valid')
+```
+
+Here is an example of how to use the library using threshold (m-of-n) multisignatures:
+```python
+import musig
+
+# builds peer list and all possible aggregated public keys in 3-of-4 (0.75%) scheme
+# also builds the merkle tree of aggr pks to allow further multisignature verification
+ms = musig.Musig('peers_file', 'mykey/private_key6509695481504055.pem', quorumpercentage=0.75)
+
+# select the first m out of a total of n peers (3-of-4) to sign the message
+cosigners_peers = {k: ms.peers[k] for k in list(ms.peers)[:ms.m]}
+
+R, s = ms.sign('Message', cosigners_peers)
+
+if ms.verify(R, s, 'Message'):
     print('Signature is valid')
 else:
     print('Signature is not valid')
